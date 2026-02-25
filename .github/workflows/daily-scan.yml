@@ -1,0 +1,24 @@
+name: Camillo Daily Scan
+
+on:
+  schedule:
+    - cron: '0 13 * * *'   # 8 AM EST daily (adjust if you want)
+  workflow_dispatch:       # allows manual run from GitHub
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run agent
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          # add reddit secrets if used
+        run: python main.py
