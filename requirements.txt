@@ -5,4 +5,4 @@ praw
 requests
 python-dotenv
 pandas
-google-search-results  # for Serper
+google-search-results  # Serper
