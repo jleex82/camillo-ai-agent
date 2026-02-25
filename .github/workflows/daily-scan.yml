@@ -2,7 +2,7 @@ name: Camillo Daily Scan
 
 on:
   schedule:
-    - cron: '0 13 * * *'   # 8 AM EST daily (adjust if you want)
+    - cron: '0 */6 * * *'   # every 6 hours
   workflow_dispatch:       # allows manual run from GitHub
 
 jobs:
