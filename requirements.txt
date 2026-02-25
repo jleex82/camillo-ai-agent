@@ -1,9 +1,8 @@
-crewai
-langchain
+langchain-core>=0.3.0
 langchain-groq
 yfinance
 praw
 requests
 python-dotenv
 pandas
-google-search-results  # Official Serper client (pip name)
+google-search-results  # for Serper
