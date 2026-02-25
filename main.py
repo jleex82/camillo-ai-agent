@@ -1,134 +1,198 @@
 import os
-from dotenv import load_dotenv
-from langchain_groq import ChatGroq
-from langchain_core.prompts import PromptTemplate
-from langchain.chains import LLMChain
-import yfinance as yf
-import praw
-import requests
 import json
+import requests
 from datetime import datetime
-from serpapi import GoogleSearch  # Serper client (pip install google-search-results)
+from dotenv import load_dotenv
+
+# LangChain imports (modern LCEL style - no langchain.chains)
+from langchain_core.prompts import PromptTemplate
+from langchain_groq import ChatGroq
+
+# Other dependencies
+import yfinance as yf
+import praw  # Reddit (optional - can fail gracefully)
 
 load_dotenv()
 
-# Keys from GitHub Secrets
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
-SERPER_API_KEY = os.getenv("SERPER_API_KEY")
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")      # Add these if using full Reddit
-REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET")
-REDDIT_USER_AGENT = "camillo-agent:v1 (by /u/yourredditusername)"
+# ────────────────────────────────────────────────
+# CONFIG - Secrets come from GitHub Secrets
+# ────────────────────────────────────────────────
+GROQ_API_KEY       = os.getenv("GROQ_API_KEY")
+DISCORD_WEBHOOK    = os.getenv("DISCORD_WEBHOOK")
+SERPER_API_KEY     = os.getenv("SERPER_API_KEY")
 
-llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=GROQ_API_KEY, temperature=0.6)
+REDDIT_CLIENT_ID     = os.getenv("REDDIT_CLIENT_ID")     or ""
+REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET") or ""
+REDDIT_USER_AGENT    = "camillo-agent:v1 (by /u/yourusername)"
 
-# Keywords — add Ontario/Canada-specific for local edge
+# Keywords - feel free to customize (Ontario/Canada friendly)
 KEYWORDS = [
-    "basil mask viral", "kojic acid tiktok", "peptide lotion trend",
-    "celsius energy drink", "crocs comfort 2026", "humanoid robot home",
-    "ozempic alternative natural", "pickleball ontario", "rucking trend canada",
-    "tim hortons viral item", "canadian cottage trend", "solar lawn mower"
+    "basil mask viral",
+    "kojic acid tiktok",
+    "peptide lotion trend",
+    "celsius energy drink",
+    "crocs comfort 2026",
+    "humanoid robot home",
+    "ozempic alternative natural",
+    "pickleball ontario",
+    "rucking trend canada",
+    "tim hortons viral item",
+    "canadian cottage trend",
+    "solar lawn mower"
 ]
 
-def get_serper_buzz(keyword):
-    """Use Serper for recent web/SERP velocity proxy (mentions, related queries)"""
-    if not SERPER_API_KEY:
-        return 0, "Serper key missing"
-    
-    params = {
-        "engine": "google",
-        "q": f"{keyword} viral OR trend OR tiktok OR reddit after:2026-02-01",  # recent filter
-        "api_key": SERPER_API_KEY,
-        "num": 10,
-        "location": "Canada"  # bias toward your location
-    }
-    try:
-        search = GoogleSearch(params)
-        results = search.get_dict()
-        organic_count = len(results.get("organic", []))
-        related = len(results.get("related_searches", [])) if "related_searches" in results else 0
-        return organic_count + related * 2, f"{organic_count} organic hits + related"
-    except Exception as e:
-        return 0, str(e)
+# ────────────────────────────────────────────────
+# LLM Setup (Groq - fast & free tier friendly)
+# ────────────────────────────────────────────────
+llm = ChatGroq(
+    model="llama-3.1-70b-versatile",   # or "mixtral-8x7b-32768" if you prefer
+    api_key=GROQ_API_KEY,
+    temperature=0.7,
+    max_tokens=500
+)
 
+# ────────────────────────────────────────────────
+# Helper: Serper.dev web buzz (fallback if no key)
+# ────────────────────────────────────────────────
+def get_serper_buzz(keyword):
+    if not SERPER_API_KEY:
+        return 0, "Serper API key not set"
+    try:
+        params = {
+            "engine": "google",
+            "q": f"{keyword} viral OR trend OR tiktok OR reddit",
+            "api_key": SERPER_API_KEY,
+            "num": 8,
+            "location": "Canada"
+        }
+        response = requests.get("https://google.serper.dev/search", params=params, timeout=10)
+        data = response.json()
+        organic = len(data.get("organic", []))
+        related = len(data.get("relatedSearches", [])) if "relatedSearches" in data else 0
+        return organic + related * 2, f"{organic} organic + {related} related"
+    except Exception as e:
+        return 0, f"Serper error: {str(e)[:60]}"
+
+# ────────────────────────────────────────────────
+# Helper: Reddit buzz (graceful fallback)
+# ────────────────────────────────────────────────
 def get_reddit_buzz(keyword):
+    if not REDDIT_CLIENT_ID or not REDDIT_CLIENT_SECRET:
+        return 0
     try:
         reddit = praw.Reddit(
-            client_id=REDDIT_CLIENT_ID or "dummy",
-            client_secret=REDDIT_CLIENT_SECRET or "dummy",
+            client_id=REDDIT_CLIENT_ID,
+            client_secret=REDDIT_CLIENT_SECRET,
             user_agent=REDDIT_USER_AGENT
         )
-        subreddit = reddit.subreddit("all")
-        count = sum(1 for _ in subreddit.search(keyword, sort="new", time_filter="week", limit=20))
+        count = sum(1 for _ in reddit.subreddit("all").search(keyword, sort="new", time_filter="week", limit=10))
         return count
-    except:
+    except Exception:
         return 0
 
+# ────────────────────────────────────────────────
+# Core analysis function (LCEL style)
+# ────────────────────────────────────────────────
 def analyze_trend(keyword):
     serper_score, serper_info = get_serper_buzz(keyword)
     reddit_score = get_reddit_buzz(keyword)
-    total_buzz = serper_score + reddit_score * 3  # weight Reddit higher for community virality
+    total_buzz = serper_score + reddit_score * 3  # Reddit weighted higher
 
-    prompt = PromptTemplate(
-        input_variables=["keyword", "buzz_score", "serper_info", "reddit_score"],
-        template="""
-        You are an enhanced Chris Camillo AI: spot asymmetric investments from consumer trends EARLY.
+    prompt = PromptTemplate.from_template(
+        """
+        You are an enhanced Chris Camillo-style investor spotting early asymmetric consumer trends.
         Keyword: {keyword}
-        Combined buzz score: {buzz_score} (Serper web hits/info: {serper_info} | Reddit new posts this week: {reddit_score})
+        Buzz score: {buzz_score}  (Serper info: {serper_info} | Reddit posts this week: {reddit_score})
 
-        Rate asymmetry 1-10 (high = early viral, low analyst coverage, big potential revenue impact, limited downside).
-        Output ONLY valid JSON:
+        Rate asymmetry 1–10 (10 = very early viral signal, low Wall Street awareness, big potential revenue impact).
+        Output **ONLY** valid JSON, nothing else:
         {{
-          "asymmetry_score": int,
-          "thesis": "2-3 sentence explanation + why asymmetric",
-          "tickers": ["TICKER1 or None", "TICKER2"],
-          "conviction": "high/medium/low",
-          "sources_summary": "brief on buzz evidence"
+          "asymmetry_score": number,
+          "thesis": "2–3 sentence explanation + why it's asymmetric",
+          "tickers": ["TICKER1 or None", "TICKER2 or None"],
+          "conviction": "high | medium | low",
+          "sources_summary": "short buzz evidence summary"
         }}
         """
     )
-    chain = LLMChain(llm=llm, prompt=prompt)
-    response = chain.run(
-        keyword=keyword,
-        buzz_score=total_buzz,
-        serper_info=serper_info,
-        reddit_score=reddit_score
-    )
-    try:
-        return json.loads(response)
-    except:
-        return {"asymmetry_score": 0, "thesis": "Parse error", "tickers": [], "conviction": "low", "sources_summary": ""}
 
+    chain = prompt | llm
+
+    try:
+        response = chain.invoke({
+            "keyword": keyword,
+            "buzz_score": total_buzz,
+            "serper_info": serper_info,
+            "reddit_score": reddit_score
+        })
+        content = response.content.strip()
+        # Sometimes LLM adds ```json ... ``` - clean it
+        if content.startswith("```json"):
+            content = content.split("```json")[1].split("```")[0].strip()
+        return json.loads(content)
+    except Exception as e:
+        return {
+            "asymmetry_score": 0,
+            "thesis": f"Analysis failed: {str(e)[:80]}",
+            "tickers": [],
+            "conviction": "low",
+            "sources_summary": ""
+        }
+
+# ────────────────────────────────────────────────
+# Stock info helper
+# ────────────────────────────────────────────────
 def get_stock_info(ticker):
     try:
         info = yf.Ticker(ticker).info
-        return f"{ticker} | ${info.get('currentPrice', 'N/A')} | MktCap ${info.get('marketCap', 'N/A'):,} | {info.get('longBusinessSummary', '')[:100]}..."
+        price = info.get("currentPrice", "N/A")
+        mcap = info.get("marketCap", "N/A")
+        if mcap != "N/A":
+            mcap = f"${mcap:,}"
+        return f"{ticker} | ${price} | Market Cap {mcap}"
     except:
-        return f"{ticker} — no data"
+        return f"{ticker} — data unavailable"
 
-# Run scan
-print(f"🚀 Enhanced Camillo Agent Run — {datetime.now().strftime('%Y-%m-%d %H:%M EST')} (Uxbridge, ON)")
+# ────────────────────────────────────────────────
+# Main execution
+# ────────────────────────────────────────────────
+def main():
+    print(f"Camillo Agent Scan — {datetime.now().strftime('%Y-%m-%d %H:%M EST')}")
 
-report = ["**Daily Asymmetric Scan Report** (Serper + Reddit + Groq-powered)"]
+    report_lines = ["**Daily Asymmetric Consumer Trend Scan**"]
+    found_signals = False
 
-high_signals = []
+    for kw in KEYWORDS:
+        analysis = analyze_trend(kw)
+        score = analysis.get("asymmetry_score", 0)
 
-for kw in KEYWORDS:
-    analysis = analyze_trend(kw)
-    if analysis.get("asymmetry_score", 0) >= 7:
-        tickers_info = [get_stock_info(t) for t in analysis["tickers"] if t and t != "None"]
-        report.append(f"\n🔥 **{kw.upper()}** — Asymmetry: {analysis['asymmetry_score']}/10 ({analysis['conviction']})")
-        report.append(f"Thesis: {analysis['thesis']}")
-        report.append(f"Buzz Evidence: {analysis['sources_summary']}")
-        if tickers_info:
-            report.append("Potential Plays:\n" + "\n".join(tickers_info))
-        high_signals.append(kw)
+        if score >= 7:
+            found_signals = True
+            tickers = analysis.get("tickers", [])
+            tickers_str = [get_stock_info(t) for t in tickers if t and t.lower() != "none"]
+            report_lines.append(f"\n🔥 **{kw.upper()}** — Score: {score}/10 ({analysis.get('conviction', 'unknown')})")
+            report_lines.append(f"Thesis: {analysis.get('thesis', 'No thesis')}")
+            report_lines.append(f"Buzz: {analysis.get('sources_summary', 'No sources')}")
+            if tickers_str:
+                report_lines.append("Plays:\n" + "\n".join(tickers_str))
+            report_lines.append("-" * 60)
 
-if not high_signals:
-    report.append("\nNo high-conviction asymmetric signals today. Market quiet — or add more keywords!")
+    if not found_signals:
+        report_lines.append("\nNo high-asymmetry signals today — keep scanning!")
 
-# Send to Discord
-payload = {"content": "\n".join(report)}
-requests.post(DISCORD_WEBHOOK, json=payload)
+    # Send to Discord
+    if DISCORD_WEBHOOK:
+        payload = {"content": "\n".join(report_lines)}
+        try:
+            requests.post(DISCORD_WEBHOOK, json=payload, timeout=10)
+            print("Report sent to Discord")
+        except Exception as e:
+            print(f"Discord send failed: {e}")
+    else:
+        print("No Discord webhook set — printing report:")
+        print("\n".join(report_lines))
 
-print("✅ Scan complete & report sent!")
+    print("Scan complete.")
+
+if __name__ == "__main__":
+    main()
