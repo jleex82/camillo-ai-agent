@@ -5,5 +5,5 @@ praw
 requests
 python-dotenv
 pandas
-google-search-results  # Serper
+google-search-results  
 tweepy
