@@ -1,0 +1,8 @@
+crewai
+langchain
+langchain-groq
+yfinance
+praw
+requests
+python-dotenv
+pandas
